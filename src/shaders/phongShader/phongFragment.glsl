@@ -20,6 +20,10 @@ varying highp vec3 vNormal;
 #define PCF_NUM_SAMPLES NUM_SAMPLES
 #define NUM_RINGS 10
 
+#define BIAS 0.01
+#define NEAR_PLANE 0.001
+#define LIGHTWIDTH 0.02
+
 #define EPS 1e-3
 #define PI 3.141592653589793
 #define PI2 6.283185307179586
@@ -83,31 +87,8 @@ void uniformDiskSamples( const in vec2 randomSeed ) {
   }
 }
 
-float findBlocker( sampler2D shadowMap,  vec2 uv, float zReceiver,float fliterSize ,bool sampleFlag) {
-  float bias = 0.001;
-  if(sampleFlag){
-    poissonDiskSamples(uv);
-  }
-  else{
-    uniformDiskSamples(uv);
-  }
-  float depth = 0.0;
-  float deta = 1.0/float(NUM_SAMPLES);
-  for(int i = 0;i<NUM_SAMPLES;i++)
-  {    
-    float temp = unpack(texture2D(shadowMap,uv + poissonDisk[i]*fliterSize));
-    if(temp < zReceiver - bias){
-      visibility += temp;
-    }else{
-      visibility += zReceiver;
-    }
-  }
-	return depth * deta;
-}
-
-float PCF(sampler2D shadowMap, vec4 coords , float fliterSize,bool sampleFlag) {
+float PCF(sampler2D shadowMap, vec4 coords , float filterSize,bool sampleFlag) {
   vec3 coordsTemp = (coords.xyz/coords.w) * 0.5 + 0.5;//normalize(coords).xyz;//(coords.xyz/coords.w);// * 0.5 + 0.5;//normalize(coords.xyz/coords.w).xyz;
-  float bias = 0.001;
   if(sampleFlag){
     poissonDiskSamples(coordsTemp.xy);
   }
@@ -119,33 +100,65 @@ float PCF(sampler2D shadowMap, vec4 coords , float fliterSize,bool sampleFlag) {
   float deta = 1.0/float(NUM_SAMPLES);
   for(int i = 0;i<NUM_SAMPLES;i++)
   {    
-    if(unpack(texture2D(shadowMap,coordsTemp.xy + poissonDisk[i]*fliterSize)) < coordsTemp.z - bias){
-      visibility -= deta;
-    }
+    // if(unpack(texture2D(shadowMap,coordsTemp.xy + poissonDisk[i]*filterSize)) < coordsTemp.z - BIAS){
+    //   visibility -= deta;
+    // }
+      float temp = unpack(texture2D(shadowMap,coordsTemp.xy + poissonDisk[i]*filterSize));
+      visibility -= temp + BIAS < coordsTemp.z ? deta : 0.0;
   }
   return visibility;
 }
 
-float PCSS(sampler2D shadowMap, vec4 coords,float fliterSize,bool sampleFlag){
-  vec3 coordsTemp = (coords.xyz/coords.w) * 0.5 + 0.5;
-  
-  // STEP 1: avgblocker depth
-  float avgDepth = findBlocker(shadowMap,coordsTemp.xy,coordsTemp.z,fliterSize,,sampleFlag); 
-  // STEP 2: penumbra size
+float findBlocker( sampler2D shadowMap,  vec2 uv, float zReceiver,bool sampleFlag) {
+  if(sampleFlag){
+    poissonDiskSamples(uv);
+  }
+  else{
+    uniformDiskSamples(uv);
+  }
+  float filterSize = sin(LIGHTWIDTH * (zReceiver - NEAR_PLANE) /zReceiver);
+  float depth = 0.0;
+  float deta = 1.0/float(NUM_SAMPLES);
+  for(int i = 0;i<NUM_SAMPLES;i++)
+  {    
+    float temp = unpack(texture2D(shadowMap,uv + poissonDisk[i]*filterSize));
+    depth += temp + BIAS < zReceiver ? temp : zReceiver;
+  }
+	return depth * deta;
+}
 
+float PCSS(sampler2D shadowMap, vec4 coords,bool sampleFlag){
+  vec3 coordsTemp = (coords.xyz/coords.w) * 0.5 + 0.5;
+  // STEP 1: avgblocker depth
+  float bloker = findBlocker(shadowMap,coordsTemp.xy,coordsTemp.z,sampleFlag); 
+  if(bloker == coordsTemp.z) return 1.0;
+  // STEP 2: penumbra size
+  float penumbraSize = (LIGHTWIDTH * (coordsTemp.z - bloker))/bloker;
+  //if(penumbraSize==0.0) return 0.0;
   // STEP 3: filtering
-  
-  return 1.0;
+  // if(sampleFlag){
+  //   poissonDiskSamples(coordsTemp.xy);
+  // }
+  // else{
+  //   uniformDiskSamples(coordsTemp.xy);
+  // }
+  // float shadow = 0.0;
+  // float deta = 1.0/float(PCF_NUM_SAMPLES);
+  // for(int i = 0;i<PCF_NUM_SAMPLES;i++){
+  //   float shadowDepth = unpack(texture2D(shadowMap,coordsTemp.xy + poissonDisk[i]*penumbraSize));
+  //   shadow += shadowDepth + BIAS < coordsTemp.z ? 0.0:1.0;
+  // }
+  // return shadow * deta;
+  return PCF(shadowMap,coords,penumbraSize,true);
 
 }
 
 
 float useShadowMap(sampler2D shadowMap, vec4 shadowCoord){
   vec3 temp = (shadowCoord.xyz/shadowCoord.w)*0.5 + 0.5;
-  float bias = 0.005;
   //float depth = texture2D(shadowMap,temp.xy).z;
   float depth = unpack(texture2D(shadowMap,temp.xy));
-  return depth < temp.z - bias ? 0.0:1.0;
+  return depth < temp.z - BIAS ? 0.0:1.0;
 }
 
 vec3 blinnPhong() {
@@ -176,7 +189,7 @@ void main(void) {
   float visibility;
   //visibility = useShadowMap(uShadowMap, vPositionFromLight);
   //visibility = PCF(uShadowMap, vPositionFromLight,0.04,true);
-  visibility = PCSS(uShadowMap, vPositionFromLight,0.04,true);
+  visibility = PCSS(uShadowMap, vPositionFromLight,true);
 
   vec3 phongColor = blinnPhong();
 
